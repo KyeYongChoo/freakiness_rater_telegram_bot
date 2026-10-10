@@ -5,10 +5,10 @@ import os
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
-from telegram import Message, ReplyParameters, Update
+from telegram import LinkPreviewOptions, Message, ReplyParameters, Update
 from telegram.constants import ParseMode
 from telegram.error import TelegramError
-from telegram.ext import Application, CommandHandler, ContextTypes, filters
+from telegram.ext import Application, CommandHandler, ContextTypes, Defaults, MessageHandler, filters
 
 from db import AuthorTally, Database, MessageTally
 
@@ -59,6 +59,23 @@ def mention(author_id: int, name: str) -> str:
     return f"<b>{html.escape(name)}</b>"
 
 
+def message_link(chat_id: int, message_id: int) -> str | None:
+    """Link that jumps to a message. Only supergroups (ids starting with -100) have these."""
+    s = str(chat_id)
+    if not s.startswith("-100"):
+        return None
+    return f"https://t.me/c/{s[4:]}/{message_id}"
+
+
+def quote(chat_id: int, m: MessageTally) -> str:
+    """The message text as a blockquote that links back to the original when possible."""
+    text = html.escape(m.text)
+    link = message_link(chat_id, m.message_id)
+    if link:
+        text = f'<a href="{link}">{text} ↗</a>'
+    return f"<blockquote>{text}</blockquote>"
+
+
 def plural(n: int) -> str:
     return f"{n} vote" if n == 1 else f"{n} votes"
 
@@ -67,7 +84,7 @@ def qualifies(messages: list[MessageTally], authors: list[AuthorTally]) -> bool:
     return len(messages) >= MIN_MESSAGES and len(authors) >= MIN_AUTHORS
 
 
-def build_report(messages: list[MessageTally], authors: list[AuthorTally], title: str) -> str:
+def build_report(chat_id: int, messages: list[MessageTally], authors: list[AuthorTally], title: str) -> str:
     top_author_votes = authors[0].votes
     top_authors = [a for a in authors if a.votes == top_author_votes]
     top_msg_votes = messages[0].votes
@@ -84,7 +101,7 @@ def build_report(messages: list[MessageTally], authors: list[AuthorTally], title
     label = "Freakiest message" if len(top_msgs) == 1 else "Joint freakiest messages"
     lines.append(f"💬 {label} ({plural(top_msg_votes)}{' each' if len(top_msgs) > 1 else ''}):")
     for m in top_msgs:
-        lines.append(f"<blockquote>{html.escape(m.text)}</blockquote>— {html.escape(m.author_name)}")
+        lines.append(f"{quote(chat_id, m)}— {html.escape(m.author_name)}")
     lines.append("")
 
     lines.append("🏆 <b>Leaderboard</b>")
@@ -135,7 +152,7 @@ async def standings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.effective_message.reply_text("No freaky votes yet today. Reply to a message with /freaky.")
         return
     authors = db.author_tallies(chat_id, day)
-    text = build_report(messages, authors, "Freakiness so far today")
+    text = build_report(chat_id, messages, authors, "Freakiness so far today")
     if not qualifies(messages, authors):
         text += (
             f"\n\n<i>Tonight's recap needs votes on at least {MIN_MESSAGES} messages "
@@ -189,7 +206,7 @@ async def alltime(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     lines.append("💬 <b>Freakiest messages ever</b>")
     for m, first_day in db.alltime_messages(chat_id, limit=3):
         lines.append(
-            f"<blockquote>{html.escape(m.text)}</blockquote>"
+            f"{quote(chat_id, m)}"
             f"— {html.escape(m.author_name)}, {format_day(first_day)} ({plural(m.votes)})"
         )
     lines.append("")
@@ -217,13 +234,20 @@ async def private_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.effective_message.reply_text("Add me to a group chat and reply to messages there with /freaky.")
 
 
+async def chat_migrated(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """A basic group was upgraded to a supergroup and got a new id; carry its stats over."""
+    msg = update.effective_message
+    db.migrate_chat(msg.chat_id, msg.migrate_to_chat_id)
+    log.info("Chat %s migrated to %s", msg.chat_id, msg.migrate_to_chat_id)
+
+
 async def post_pending_recaps(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Post recaps for every finished day that hasn't had one yet (also catches up after downtime)."""
     for chat_id, day in db.pending_recaps(before_day=today()):
         messages = db.message_tallies(chat_id, day)
         authors = db.author_tallies(chat_id, day)
         if qualifies(messages, authors):
-            text = build_report(messages, authors, f"Daily Freakiness Report — {format_day(day)}")
+            text = build_report(chat_id, messages, authors, f"Daily Freakiness Report — {format_day(day)}")
             try:
                 await context.bot.send_message(
                     chat_id,
@@ -242,7 +266,9 @@ async def post_pending_recaps(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 def main() -> None:
-    app = Application.builder().token(BOT_TOKEN).build()
+    # Link previews off so the message links in reports don't expand into big cards.
+    defaults = Defaults(link_preview_options=LinkPreviewOptions(is_disabled=True))
+    app = Application.builder().token(BOT_TOKEN).defaults(defaults).build()
 
     groups = filters.ChatType.GROUPS
     app.add_handler(CommandHandler("freaky", freaky, filters=groups))
@@ -250,6 +276,7 @@ def main() -> None:
     app.add_handler(CommandHandler("alltime", alltime, filters=groups))
     app.add_handler(CommandHandler(["help", "start"], help_cmd, filters=groups))
     app.add_handler(CommandHandler(["freaky", "standings", "alltime", "help", "start"], private_chat, filters=filters.ChatType.PRIVATE))
+    app.add_handler(MessageHandler(filters.StatusUpdate.MIGRATE & filters.ChatType.GROUP, chat_migrated))
 
     # A few seconds past midnight so "today" has definitely rolled over.
     app.job_queue.run_daily(post_pending_recaps, time=dt.time(0, 0, 5, tzinfo=TZ))

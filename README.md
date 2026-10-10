@@ -10,6 +10,7 @@ A Telegram bot that lets your group chat vote on the freakiest messages each day
 - **Daily recap:** at midnight (in `TIMEZONE`) the bot posts the freakiest person (most votes across all their messages), the freakiest message, and a leaderboard. It only posts if **at least 2 different messages from at least 2 different people** got votes that day. Ties are shown as joint winners.
 - Votes count toward the day they were cast, even when the message is older.
 - If the bot was offline at midnight, it posts any missed recaps when it starts up again.
+- **Jump to message:** in recaps and `/alltime`, tap a quoted message (marked ↗) to jump to it in the chat. This only works in **supergroups**, because basic groups don't have message links. Telegram upgrades a group to a supergroup automatically when you change certain settings (e.g. turning on *Chat history for new members*). Stats carry over when that happens, but links to messages from before the upgrade may not work.
 
 ## 1. Create the bot
 

@@ -127,6 +127,11 @@ class Database:
             (before_day,),
         ).fetchall()
 
+    def migrate_chat(self, old_chat_id, new_chat_id):
+        self.conn.execute("UPDATE OR IGNORE votes SET chat_id = ? WHERE chat_id = ?", (new_chat_id, old_chat_id))
+        self.conn.execute("UPDATE OR IGNORE recaps SET chat_id = ? WHERE chat_id = ?", (new_chat_id, old_chat_id))
+        self.conn.commit()
+
     def mark_recapped(self, chat_id, day):
         self.conn.execute("INSERT OR IGNORE INTO recaps (chat_id, day) VALUES (?, ?)", (chat_id, day))
         self.conn.commit()
