@@ -35,7 +35,7 @@ A Telegram bot that lets your group chat vote on the freakiest messages each day
    loudvotes - Confirm votes with a reply
    help - How this works and current settings
    ```
-3. Add the bot to your group. If `/freaky` gets ignored, either make the bot an admin or run `/setprivacy` → **Disable** in BotFather, then remove the bot and add it back.
+3. Add the bot to your group. If `/freaky` gets ignored, or the bot says to reply to a message when you did, either make the bot an admin or run `/setprivacy` → **Disable** in BotFather, then remove the bot and add it back. The second problem only happens in basic groups (not supergroups): Telegram leaves out a reply when it points at a message the bot was never shown, and with privacy mode on, the bot isn't shown ordinary messages. In the end I opted to request the owner to change to supergroup instead since it doesnt have the same privacy problems
 
 ## 2. Run locally
 

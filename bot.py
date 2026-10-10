@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 from telegram import LinkPreviewOptions, Message, MessageEntity, ReactionTypeEmoji, ReplyParameters, Update
-from telegram.constants import ParseMode, ReactionEmoji
+from telegram.constants import ChatType, ParseMode, ReactionEmoji
 from telegram.error import BadRequest, ChatMigrated, NetworkError, RetryAfter, TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, Defaults, MessageHandler, filters
 
@@ -181,7 +181,18 @@ async def freaky(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             msg.chat.is_forum,
             msg.message_thread_id,
         )
-        await msg.reply_text("Reply to the message you think is freaky with /freaky 🥵")
+        text = "Reply to the message you think is freaky with /freaky 🥵"
+        if msg.chat.type == ChatType.GROUP and not context.bot.can_read_all_group_messages:
+            # In basic groups, Telegram drops the reply when it points at a message that
+            # privacy mode hid from the bot, so a real reply looks like no reply at all.
+            text += (
+                "\n\nIf you did reply: in a regular group I cannot see replies "
+                "I was shown. Turn this into a supergroup by going to manage group "
+                "> Chat History for new members > Visible. You can change Chat History"
+                "for new members back to 'Hidden' afterwards; it will still be classified "
+                "as a supergroup by Telegram"
+            )
+        await msg.reply_text(text)
         return
 
     author = author_of(target)
