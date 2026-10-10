@@ -166,7 +166,14 @@ class Database:
         self.conn.execute("UPDATE OR IGNORE votes SET chat_id = ? WHERE chat_id = ?", (new_chat_id, old_chat_id))
         self.conn.execute("UPDATE OR IGNORE recaps SET chat_id = ? WHERE chat_id = ?", (new_chat_id, old_chat_id))
         self.conn.execute("UPDATE OR IGNORE chat_settings SET chat_id = ? WHERE chat_id = ?", (new_chat_id, old_chat_id))
+        # Rows that clashed with the new chat can't be reached any more, and leaving them would
+        # make the recap job keep trying the dead chat id.
+        self.conn.execute("DELETE FROM votes WHERE chat_id = ?", (old_chat_id,))
         self.conn.commit()
+
+    def is_recapped(self, chat_id, day) -> bool:
+        row = self.conn.execute("SELECT 1 FROM recaps WHERE chat_id = ? AND day = ?", (chat_id, day)).fetchone()
+        return row is not None
 
     def mark_recapped(self, chat_id, day):
         self.conn.execute("INSERT OR IGNORE INTO recaps (chat_id, day) VALUES (?, ?)", (chat_id, day))

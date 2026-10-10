@@ -5,13 +5,16 @@ A Telegram bot that lets your group chat vote on the freakiest messages each day
 ## How it works
 
 - **Vote:** reply to a message with `/freaky`. Each person gets one vote per message. You can vote for as many different messages as you like, including your own.
-- **🔥 on voted messages:** in both modes, the bot reacts 🔥 to any message that has at least one vote, so freaky messages stand out in the chat. The 🔥 comes off if every vote on the message is taken back. Bot commands (like someone else's `/freaky`) can't be voted for. Change `FREAKY_MESSAGE_REACTION` in `bot.py` to use a different emoji.
-- **Take a vote back:** reply to the message with `/unfreaky`. This only works for votes cast today; earlier votes are locked in.
-- **Check standings:** `/standings` shows today's votes so far.
+- **😈 on voted messages:** in both modes, the bot reacts 😈 to any message that has at least one vote, so freaky messages stand out in the chat. The 😈 comes off if every vote on the message is taken back. Bot commands (like someone else's `/freaky`) can't be voted for. Change `FREAKY_MESSAGE_REACTION` in `bot.py` to use a different emoji.
+- **Take a vote back:** reply to the message with `/unfreaky`. This works until that day's recap has run; after that the vote is locked in.
+- **Check standings:** `/standings` shows today's votes so far. Unlike the midnight recap, it doesn't tag (and notify) the leader.
+- Commands only count when they're sent. Editing an old message into `/freaky` does nothing.
 - **All-time stats:** `/alltime` shows the all-time leaderboard, how many days each person was crowned freakiest (👑), the 3 freakiest messages ever, and the "biggest enabler" (whoever has cast the most votes).
 - **Daily recap:** at midnight (in `TIMEZONE`) the bot posts the freakiest person (most votes across all their messages), the freakiest message, and a leaderboard. It only posts if **at least 2 different messages from at least 2 different people** got votes that day. Ties are shown as joint winners.
-- Votes count toward the day they were cast, even when the message is older.
-- If the bot was offline at midnight, it posts any missed recaps when it starts up again.
+- Votes count toward the day they were cast, even when the message is older. A vote sent just before midnight that only reaches the bot after that day's recap counts toward the new day instead.
+- If the bot was offline at midnight, it posts any missed recaps when it starts up again. If Telegram is unreachable or rate-limits the bot, it retries the recap instead of skipping it.
+- **Anonymous admins:** Telegram hides which admin sent a message, so all anonymous admins share one vote per message (and can take back each other's votes). Their messages are credited to the group itself.
+- **Quoted messages are permanent:** the bot saves the text of voted messages when the votes come in. Recaps and `/alltime` keep quoting them even if the original is deleted, and spoilers are shown as plain text.
 - **Settings** (anyone in the group can change them; `/help` shows the current state):
   - `/mutereports` / `/unmutereports`: turn the midnight report off or on. Days that pass while muted are skipped for good and aren't posted later. They still count toward `/alltime` stats and crowns.
   - `/quietvotes` / `/loudvotes`: in quiet mode the bot only reacts to `/freaky` with 🔥 (🤷 if you already voted, 💔 for `/unfreaky`) instead of replying. If the group's reaction settings block that emoji, it falls back to a reply. Bots can only use Telegram's standard reactions, so 🌶️ and 🥵 aren't possible; change `VOTE_REACTION` in `bot.py` to use ❤️‍🔥, 😈 or 💋 instead.

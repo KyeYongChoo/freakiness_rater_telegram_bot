@@ -1,3 +1,4 @@
+import asyncio
 import datetime as dt
 import html
 import logging
@@ -7,7 +8,7 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from telegram import LinkPreviewOptions, Message, MessageEntity, ReactionTypeEmoji, ReplyParameters, Update
 from telegram.constants import ParseMode, ReactionEmoji
-from telegram.error import TelegramError
+from telegram.error import BadRequest, ChatMigrated, NetworkError, RetryAfter, TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, Defaults, MessageHandler, filters
 
 from db import AuthorTally, Database, MessageTally
@@ -31,7 +32,7 @@ ALREADY_VOTED_REACTION = ReactionEmoji.SHRUG
 UNVOTE_REACTION = ReactionEmoji.BROKEN_HEART
 # Put on every message that has at least one vote, in both modes. A bot can only leave
 # one reaction per message, so this marks "has votes" rather than showing a count.
-FREAKY_MESSAGE_REACTION = ReactionEmoji.FIRE
+FREAKY_MESSAGE_REACTION = ReactionEmoji.SMILING_FACE_WITH_HORNS
 
 logging.basicConfig(format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -39,9 +40,19 @@ log = logging.getLogger("freaky")
 
 db = Database(DB_PATH)
 
+# Every day before this one has been closed by the recap job, so late votes can't land on
+# it anymore. Empty until the first recap run (YYYY-MM-DD strings compare in date order).
+closed_before = ""
+recap_lock = asyncio.Lock()
+
 
 def today() -> str:
     return dt.datetime.now(TZ).date().isoformat()
+
+
+def day_closed(chat_id: int, day: str) -> bool:
+    """Whether `day`'s recap has already run, so its votes are locked in."""
+    return day < closed_before or db.is_recapped(chat_id, day)
 
 
 def message_preview(msg: Message, limit: int = 200) -> str:
@@ -63,8 +74,9 @@ def author_of(msg: Message) -> tuple[int, str] | None:
     return None
 
 
-def mention(author_id: int, name: str) -> str:
-    if author_id > 0:  # real user, not a chat
+def mention(author_id: int, name: str, ping: bool = True) -> str:
+    """The name as a clickable mention (which notifies them) when `ping` is set."""
+    if ping and author_id > 0:  # real user, not a chat
         return f'<a href="tg://user?id={author_id}">{html.escape(name)}</a>'
     return f"<b>{html.escape(name)}</b>"
 
@@ -94,7 +106,9 @@ def qualifies(messages: list[MessageTally], authors: list[AuthorTally]) -> bool:
     return len(messages) >= MIN_MESSAGES and len(authors) >= MIN_AUTHORS
 
 
-def build_report(chat_id: int, messages: list[MessageTally], authors: list[AuthorTally], title: str) -> str:
+def build_report(
+    chat_id: int, messages: list[MessageTally], authors: list[AuthorTally], title: str, ping: bool = True
+) -> str:
     top_author_votes = authors[0].votes
     top_authors = [a for a in authors if a.votes == top_author_votes]
     top_msg_votes = messages[0].votes
@@ -102,7 +116,7 @@ def build_report(chat_id: int, messages: list[MessageTally], authors: list[Autho
 
     lines = [f"🥵 <b>{html.escape(title)}</b>", ""]
 
-    names = " &amp; ".join(mention(a.author_id, a.author_name) for a in top_authors)
+    names = " &amp; ".join(mention(a.author_id, a.author_name, ping) for a in top_authors)
     label = "Freakiest person" if len(top_authors) == 1 else "Joint freakiest"
     each = " each" if len(top_authors) > 1 else ""
     lines.append(f"👑 {label}: {names} ({plural(top_author_votes)}{each})")
@@ -174,6 +188,9 @@ async def freaky(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     voter = update.effective_user
     day = msg.date.astimezone(TZ).date().isoformat()
+    if day_closed(msg.chat_id, day):
+        # Sent just before midnight but handled after that day's recap; count it for today.
+        day = today()
     author_id, author_name = author
     added = db.add_vote(
         chat_id=msg.chat_id,
@@ -206,8 +223,8 @@ async def unfreaky(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if day is None:
         await acknowledge(msg, ALREADY_VOTED_REACTION, "You haven't voted for that message.")
         return
-    if day != today():
-        # Past days are already recapped and feed into all-time stats.
+    if day_closed(msg.chat_id, day):
+        # That day has been recapped and feeds into all-time stats.
         await msg.reply_text("Too late, that vote's locked in. Only today's votes can be taken back.")
         return
 
@@ -233,7 +250,8 @@ async def standings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.effective_message.reply_text("No freaky votes yet today. Reply to a message with /freaky.")
         return
     authors = db.author_tallies(chat_id, day)
-    text = build_report(chat_id, messages, authors, "Freakiness so far today")
+    # No pings here: people check standings often, and the leader would get notified every time.
+    text = build_report(chat_id, messages, authors, "Freakiness so far today", ping=False)
     if not qualifies(messages, authors):
         text += (
             f"\n\n<i>Tonight's recap needs votes on at least {MIN_MESSAGES} messages "
@@ -329,30 +347,54 @@ async def chat_migrated(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     log.info("Chat %s migrated to %s", msg.chat_id, msg.migrate_to_chat_id)
 
 
+async def post_recap(context: ContextTypes.DEFAULT_TYPE, chat_id: int, day: str) -> None:
+    """Post one day's recap and mark the day done. Raises ChatMigrated, RetryAfter and
+    network errors without marking it, so the day is retried."""
+    messages = db.message_tallies(chat_id, day)
+    authors = db.author_tallies(chat_id, day)
+    if db.get_setting(chat_id, "reports_muted"):
+        log.info("Skipped recap for chat %s, %s: reports muted", chat_id, day)
+    elif qualifies(messages, authors):
+        text = build_report(chat_id, messages, authors, f"Daily Freakiness Report — {format_day(day)}")
+        try:
+            await context.bot.send_message(
+                chat_id,
+                text,
+                parse_mode=ParseMode.HTML,
+                reply_parameters=ReplyParameters(message_id=messages[0].message_id, allow_sending_without_reply=True),
+            )
+            log.info("Posted recap for chat %s, %s", chat_id, day)
+        except BadRequest as e:  # a NetworkError subclass, but retrying won't help
+            log.warning("Couldn't post recap for chat %s, %s: %s", chat_id, day, e)
+        except (ChatMigrated, RetryAfter, NetworkError):
+            raise
+        except TelegramError as e:  # e.g. the bot was removed from the group
+            log.warning("Couldn't post recap for chat %s, %s: %s", chat_id, day, e)
+    else:
+        log.info("Skipped recap for chat %s, %s: not enough votes", chat_id, day)
+    db.mark_recapped(chat_id, day)
+
+
 async def post_pending_recaps(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Post recaps for every finished day that hasn't had one yet (also catches up after downtime)."""
-    for chat_id, day in db.pending_recaps(before_day=today()):
-        messages = db.message_tallies(chat_id, day)
-        authors = db.author_tallies(chat_id, day)
-        if db.get_setting(chat_id, "reports_muted"):
-            log.info("Skipped recap for chat %s, %s: reports muted", chat_id, day)
-        elif qualifies(messages, authors):
-            text = build_report(chat_id, messages, authors, f"Daily Freakiness Report — {format_day(day)}")
-            try:
-                await context.bot.send_message(
-                    chat_id,
-                    text,
-                    parse_mode=ParseMode.HTML,
-                    reply_parameters=ReplyParameters(
-                        message_id=messages[0].message_id, allow_sending_without_reply=True
-                    ),
-                )
-                log.info("Posted recap for chat %s, %s", chat_id, day)
-            except TelegramError as e:
-                log.warning("Couldn't post recap for chat %s, %s: %s", chat_id, day, e)
-        else:
-            log.info("Skipped recap for chat %s, %s: not enough votes", chat_id, day)
-        db.mark_recapped(chat_id, day)
+    global closed_before
+    # The startup and midnight jobs can overlap; without the lock both would post the same recap.
+    async with recap_lock:
+        closed_before = today()
+        while pending := db.pending_recaps(before_day=closed_before):
+            for chat_id, day in pending:
+                try:
+                    await post_recap(context, chat_id, day)
+                except ChatMigrated as e:
+                    # We missed the upgrade-to-supergroup message; move the stats and start over.
+                    log.info("Chat %s migrated to %s", chat_id, e.new_chat_id)
+                    db.migrate_chat(chat_id, e.new_chat_id)
+                    break
+                except (RetryAfter, NetworkError) as e:
+                    delay = e.retry_after if isinstance(e, RetryAfter) else 60
+                    log.warning("Couldn't post recap for chat %s, %s: %s; retrying in %s", chat_id, day, e, delay)
+                    context.job_queue.run_once(post_pending_recaps, when=delay)
+                    return
 
 
 def main() -> None:
@@ -360,7 +402,10 @@ def main() -> None:
     defaults = Defaults(link_preview_options=LinkPreviewOptions(is_disabled=True))
     app = Application.builder().token(BOT_TOKEN).defaults(defaults).build()
 
-    groups = filters.ChatType.GROUPS
+    # New messages only: CommandHandler also fires on edits by default, so editing an old
+    # reply into /freaky would count a vote on the day the original was sent.
+    new_message = filters.UpdateType.MESSAGE
+    groups = filters.ChatType.GROUPS & new_message
     app.add_handler(CommandHandler("freaky", freaky, filters=groups))
     app.add_handler(CommandHandler("unfreaky", unfreaky, filters=groups))
     app.add_handler(CommandHandler("standings", standings, filters=groups))
@@ -375,7 +420,7 @@ def main() -> None:
         "quiet_votes", False, "📢 Loud votes on: I'll reply to every /freaky again."), filters=groups))
     app.add_handler(CommandHandler("alltime", alltime, filters=groups))
     app.add_handler(CommandHandler(["help", "start"], help_cmd, filters=groups))
-    app.add_handler(CommandHandler(["freaky", "unfreaky", "standings", "alltime", "mutereports", "unmutereports", "quietvotes", "loudvotes", "help", "start"], private_chat, filters=filters.ChatType.PRIVATE))
+    app.add_handler(CommandHandler(["freaky", "unfreaky", "standings", "alltime", "mutereports", "unmutereports", "quietvotes", "loudvotes", "help", "start"], private_chat, filters=filters.ChatType.PRIVATE & new_message))
     app.add_handler(MessageHandler(filters.StatusUpdate.MIGRATE & filters.ChatType.GROUP, chat_migrated))
 
     # A few seconds past midnight so "today" has definitely rolled over.
