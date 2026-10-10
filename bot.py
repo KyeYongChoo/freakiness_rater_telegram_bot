@@ -173,6 +173,14 @@ async def freaky(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.effective_message
     target = replied_target(msg)
     if target is None:
+        log.info(
+            "/freaky without a usable reply in chat %s: reply_to=%s external_reply=%s forum=%s thread=%s",
+            msg.chat_id,
+            msg.reply_to_message and msg.reply_to_message.message_id,
+            msg.external_reply is not None,
+            msg.chat.is_forum,
+            msg.message_thread_id,
+        )
         await msg.reply_text("Reply to the message you think is freaky with /freaky 🥵")
         return
 
