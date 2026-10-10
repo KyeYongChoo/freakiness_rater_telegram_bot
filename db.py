@@ -42,6 +42,12 @@ class Database:
                 day     TEXT    NOT NULL,
                 PRIMARY KEY (chat_id, day)
             );
+
+            CREATE TABLE IF NOT EXISTS chat_settings (
+                chat_id       INTEGER PRIMARY KEY,
+                reports_muted INTEGER NOT NULL DEFAULT 0,
+                quiet_votes   INTEGER NOT NULL DEFAULT 0
+            );
             """
         )
         self.conn.commit()
@@ -56,6 +62,34 @@ class Database:
         )
         self.conn.commit()
         return cur.rowcount == 1
+
+    def vote_day(self, chat_id, message_id, voter_id) -> str | None:
+        """The day this voter voted for this message, or None if they haven't."""
+        row = self.conn.execute(
+            "SELECT day FROM votes WHERE chat_id = ? AND message_id = ? AND voter_id = ?",
+            (chat_id, message_id, voter_id),
+        ).fetchone()
+        return row[0] if row else None
+
+    def remove_vote(self, chat_id, message_id, voter_id):
+        self.conn.execute(
+            "DELETE FROM votes WHERE chat_id = ? AND message_id = ? AND voter_id = ?",
+            (chat_id, message_id, voter_id),
+        )
+        self.conn.commit()
+
+    def get_setting(self, chat_id, name: str) -> bool:
+        row = self.conn.execute(f"SELECT {name} FROM chat_settings WHERE chat_id = ?", (chat_id,)).fetchone()
+        return bool(row[0]) if row else False
+
+    def set_setting(self, chat_id, name: str, value: bool):
+        # `name` is always one of our own column names, never user input.
+        self.conn.execute(
+            f"INSERT INTO chat_settings (chat_id, {name}) VALUES (?, ?) "
+            f"ON CONFLICT (chat_id) DO UPDATE SET {name} = excluded.{name}",
+            (chat_id, int(value)),
+        )
+        self.conn.commit()
 
     def message_votes(self, chat_id, message_id, day) -> int:
         row = self.conn.execute(
@@ -130,6 +164,7 @@ class Database:
     def migrate_chat(self, old_chat_id, new_chat_id):
         self.conn.execute("UPDATE OR IGNORE votes SET chat_id = ? WHERE chat_id = ?", (new_chat_id, old_chat_id))
         self.conn.execute("UPDATE OR IGNORE recaps SET chat_id = ? WHERE chat_id = ?", (new_chat_id, old_chat_id))
+        self.conn.execute("UPDATE OR IGNORE chat_settings SET chat_id = ? WHERE chat_id = ?", (new_chat_id, old_chat_id))
         self.conn.commit()
 
     def mark_recapped(self, chat_id, day):

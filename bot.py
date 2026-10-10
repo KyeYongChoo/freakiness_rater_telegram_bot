@@ -5,8 +5,8 @@ import os
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
-from telegram import LinkPreviewOptions, Message, ReplyParameters, Update
-from telegram.constants import ParseMode
+from telegram import LinkPreviewOptions, Message, ReactionTypeEmoji, ReplyParameters, Update
+from telegram.constants import ParseMode, ReactionEmoji
 from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, Defaults, MessageHandler, filters
 
@@ -22,6 +22,13 @@ DB_PATH = os.environ.get("DB_PATH", "freaky.db")
 # from at least this many distinct people received votes.
 MIN_MESSAGES = 2
 MIN_AUTHORS = 2
+
+# Reactions used in quiet-votes mode. Bots can only use Telegram's standard reaction
+# emojis (see telegram.constants.ReactionEmoji); other spicy options: HEART_ON_FIRE,
+# SMILING_FACE_WITH_HORNS, KISS_MARK.
+VOTE_REACTION = ReactionEmoji.FIRE
+ALREADY_VOTED_REACTION = ReactionEmoji.SHRUG
+UNVOTE_REACTION = ReactionEmoji.BROKEN_HEART
 
 logging.basicConfig(format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -111,11 +118,30 @@ def build_report(chat_id: int, messages: list[MessageTally], authors: list[Autho
     return "\n".join(lines)
 
 
-async def freaky(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    msg = update.effective_message
+def replied_target(msg: Message) -> Message | None:
     target = msg.reply_to_message
     # In forum topics, a non-reply message "replies" to the topic's creation message.
     if target is None or target.forum_topic_created:
+        return None
+    return target
+
+
+async def acknowledge(msg: Message, reaction: ReactionEmoji, text: str) -> None:
+    """React with an emoji in quiet-votes mode, otherwise reply with text."""
+    if db.get_setting(msg.chat_id, "quiet_votes"):
+        try:
+            await msg.set_reaction(ReactionTypeEmoji(reaction))
+            return
+        except TelegramError as e:
+            # e.g. the group only allows certain reactions; fall back to a reply.
+            log.warning("Couldn't react in chat %s: %s", msg.chat_id, e)
+    await msg.reply_text(text)
+
+
+async def freaky(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.effective_message
+    target = replied_target(msg)
+    if target is None:
         await msg.reply_text("Reply to the message you think is freaky with /freaky 🥵")
         return
 
@@ -139,9 +165,38 @@ async def freaky(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
     count = db.message_votes(msg.chat_id, target.message_id, day)
     if added:
-        await msg.reply_text(f"🔥 Vote counted. This message is at {plural(count)} today.")
+        await acknowledge(msg, VOTE_REACTION, f"🔥 Vote counted. This message is at {plural(count)} today.")
     else:
-        await msg.reply_text(f"You already voted for this one ({plural(count)} today).")
+        await acknowledge(msg, ALREADY_VOTED_REACTION, f"You already voted for this one ({plural(count)} today).")
+
+
+async def unfreaky(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.effective_message
+    target = replied_target(msg)
+    if target is None:
+        await msg.reply_text("Reply to the message you voted for with /unfreaky to take your vote back.")
+        return
+
+    voter_id = update.effective_user.id
+    day = db.vote_day(msg.chat_id, target.message_id, voter_id)
+    if day is None:
+        await acknowledge(msg, ALREADY_VOTED_REACTION, "You haven't voted for that message.")
+        return
+    if day != today():
+        # Past days are already recapped and feed into all-time stats.
+        await msg.reply_text("Too late, that vote's locked in. Only today's votes can be taken back.")
+        return
+
+    db.remove_vote(msg.chat_id, target.message_id, voter_id)
+    count = db.message_votes(msg.chat_id, target.message_id, day)
+    await acknowledge(msg, UNVOTE_REACTION, f"💔 Vote removed. This message is at {plural(count)} today.")
+
+
+def setting_command(name: str, value: bool, confirmation: str):
+    async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        db.set_setting(update.effective_chat.id, name, value)
+        await update.effective_message.reply_text(confirmation)
+    return handler
 
 
 async def standings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -188,7 +243,7 @@ async def alltime(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     crowns = count_crowns(chat_id)
     voters = db.alltime_voters(chat_id)
 
-    lines = ["🥵 <b>All-Time Freakiness</b>", ""]
+    lines = ["🥵 <b>All-Time Freakiness</b>", "🪞Mirror mirror on the wall, who's the FREAKIEST of them all?🥵",""]
 
     if crowns:
         most = max(crowns.values())
@@ -218,14 +273,21 @@ async def alltime(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    reports = "🔕 muted" if db.get_setting(chat_id, "reports_muted") else "🔔 on"
+    votes = f"{VOTE_REACTION.value} react only" if db.get_setting(chat_id, "quiet_votes") else "💬 reply"
     await update.effective_message.reply_text(
         "🥵 <b>Freakiness Rater</b>\n\n"
         "/freaky — reply to a message with this to vote it as freaky "
         "(one vote per person per message)\n"
+        "/unfreaky — reply to a message to take back today's vote on it\n"
         "/standings — see today's freakiness so far\n"
         "/alltime — all-time leaderboard, crowns and freakiest messages ever\n\n"
+        "/mutereports · /unmutereports — turn the midnight report off or on\n"
+        "/quietvotes · /loudvotes — confirm votes with just a reaction, or with a reply\n\n"
         f"At midnight I'll post who was freakiest and the freakiest message, as long as "
-        f"at least {MIN_MESSAGES} messages from {MIN_AUTHORS} different people got votes.",
+        f"at least {MIN_MESSAGES} messages from {MIN_AUTHORS} different people got votes.\n\n"
+        f"<b>Settings here:</b> daily report {reports} · vote confirmations {votes}",
         parse_mode=ParseMode.HTML,
     )
 
@@ -246,7 +308,9 @@ async def post_pending_recaps(context: ContextTypes.DEFAULT_TYPE) -> None:
     for chat_id, day in db.pending_recaps(before_day=today()):
         messages = db.message_tallies(chat_id, day)
         authors = db.author_tallies(chat_id, day)
-        if qualifies(messages, authors):
+        if db.get_setting(chat_id, "reports_muted"):
+            log.info("Skipped recap for chat %s, %s: reports muted", chat_id, day)
+        elif qualifies(messages, authors):
             text = build_report(chat_id, messages, authors, f"Daily Freakiness Report — {format_day(day)}")
             try:
                 await context.bot.send_message(
@@ -272,10 +336,20 @@ def main() -> None:
 
     groups = filters.ChatType.GROUPS
     app.add_handler(CommandHandler("freaky", freaky, filters=groups))
+    app.add_handler(CommandHandler("unfreaky", unfreaky, filters=groups))
     app.add_handler(CommandHandler("standings", standings, filters=groups))
+    app.add_handler(CommandHandler("mutereports", setting_command(
+        "reports_muted", True, "🔕 Daily reports muted. /unmutereports to turn them back on."), filters=groups))
+    app.add_handler(CommandHandler("unmutereports", setting_command(
+        "reports_muted", False, "🔔 Daily reports are back on."), filters=groups))
+    app.add_handler(CommandHandler("quietvotes", setting_command(
+        "quiet_votes", True, f"🤫 Quiet votes on: I'll just react {VOTE_REACTION.value} to /freaky. /loudvotes to undo."),
+        filters=groups))
+    app.add_handler(CommandHandler("loudvotes", setting_command(
+        "quiet_votes", False, "📢 Loud votes on: I'll reply to every /freaky again."), filters=groups))
     app.add_handler(CommandHandler("alltime", alltime, filters=groups))
     app.add_handler(CommandHandler(["help", "start"], help_cmd, filters=groups))
-    app.add_handler(CommandHandler(["freaky", "standings", "alltime", "help", "start"], private_chat, filters=filters.ChatType.PRIVATE))
+    app.add_handler(CommandHandler(["freaky", "unfreaky", "standings", "alltime", "mutereports", "unmutereports", "quietvotes", "loudvotes", "help", "start"], private_chat, filters=filters.ChatType.PRIVATE))
     app.add_handler(MessageHandler(filters.StatusUpdate.MIGRATE & filters.ChatType.GROUP, chat_migrated))
 
     # A few seconds past midnight so "today" has definitely rolled over.

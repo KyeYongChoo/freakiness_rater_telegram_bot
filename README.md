@@ -1,15 +1,19 @@
 # Freakiness Rater 🥵
 
-A Telegram bot that lets your group chat vote on the freakiest messages each day. At midnight it posts the results.
+A Telegram bot that lets your group chat vote on the freakiest messages each day. At midnight it posts the results. Currently hosted on Google Cloud.
 
 ## How it works
 
 - **Vote:** reply to a message with `/freaky`. Each person gets one vote per message. You can vote for as many different messages as you like, including your own.
+- **Take a vote back:** reply to the message with `/unfreaky`. This only works for votes cast today; earlier votes are locked in.
 - **Check standings:** `/standings` shows today's votes so far.
 - **All-time stats:** `/alltime` shows the all-time leaderboard, how many days each person was crowned freakiest (👑), the 3 freakiest messages ever, and the "biggest enabler" (whoever has cast the most votes).
 - **Daily recap:** at midnight (in `TIMEZONE`) the bot posts the freakiest person (most votes across all their messages), the freakiest message, and a leaderboard. It only posts if **at least 2 different messages from at least 2 different people** got votes that day. Ties are shown as joint winners.
 - Votes count toward the day they were cast, even when the message is older.
 - If the bot was offline at midnight, it posts any missed recaps when it starts up again.
+- **Settings** (anyone in the group can change them; `/help` shows the current state):
+  - `/mutereports` / `/unmutereports`: turn the midnight report off or on. Days that pass while muted are skipped for good and aren't posted later. They still count toward `/alltime` stats and crowns.
+  - `/quietvotes` / `/loudvotes`: in quiet mode the bot only reacts to `/freaky` with 🔥 (🤷 if you already voted, 💔 for `/unfreaky`) instead of replying. If the group's reaction settings block that emoji, it falls back to a reply. Bots can only use Telegram's standard reactions, so 🌶️ and 🥵 aren't possible; change `VOTE_REACTION` in `bot.py` to use ❤️‍🔥, 😈 or 💋 instead.
 - **Jump to message:** in recaps and `/alltime`, tap a quoted message (marked ↗) to jump to it in the chat. This only works in **supergroups**, because basic groups don't have message links. Telegram upgrades a group to a supergroup automatically when you change certain settings (e.g. turning on *Chat history for new members*). Stats carry over when that happens, but links to messages from before the upgrade may not work.
 
 ## 1. Create the bot
@@ -18,9 +22,14 @@ A Telegram bot that lets your group chat vote on the freakiest messages each day
 2. Optional: send `/setcommands`, pick your bot, and paste:
    ```
    freaky - Reply to a message to vote it freaky
+   unfreaky - Reply to a message to take back your vote
    standings - Today's freakiness so far
    alltime - All-time leaderboard and freakiest messages ever
-   help - How this works
+   mutereports - Stop posting the daily report
+   unmutereports - Resume the daily report
+   quietvotes - Confirm votes with a reaction instead of a reply
+   loudvotes - Confirm votes with a reply
+   help - How this works and current settings
    ```
 3. Add the bot to your group. If `/freaky` gets ignored, either make the bot an admin or run `/setprivacy` → **Disable** in BotFather, then remove the bot and add it back.
 
