@@ -39,7 +39,7 @@ The bot uses long polling, so it needs an always-on **worker / background proces
 
 - **Railway:** New Project → Deploy from GitHub repo. Add `BOT_TOKEN` (and `TIMEZONE` if you're not in Singapore) as variables. Attach a **Volume** mounted at `/data`.
 - **Fly.io:** `fly launch --no-deploy`, then `fly volumes create data --size 1`, add a `[mounts]` section with `source = "data"` and `destination = "/data"` to `fly.toml`, run `fly secrets set BOT_TOKEN=...`, then `fly deploy`.
-- **Any VPS** (e.g. Oracle Cloud Always Free): `docker build -t freaky . && docker run -d --restart unless-stopped -e BOT_TOKEN=... -v freaky-data:/data freaky`
+- **Any VPS** (e.g. Hetzner, DigitalOcean, Oracle Cloud Always Free): install Docker, copy the project over, create `.env`, then run `docker compose up -d --build`. The bot restarts by itself after crashes and reboots, and the database is kept in `./data/freaky.db`. Logs: `docker compose logs -f`. Update: copy the new code over, then run `docker compose up -d --build` again.
 
 Free tiers change often, so check current pricing. Hosts that put free *web services* to sleep, like Render's free tier, won't work for this bot.
 
