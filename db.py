@@ -91,10 +91,11 @@ class Database:
         )
         self.conn.commit()
 
-    def message_votes(self, chat_id, message_id, day) -> int:
+    def message_votes(self, chat_id, message_id, day=None) -> int:
+        """Votes on a message on `day`, or across all days if `day` is None."""
         row = self.conn.execute(
-            "SELECT COUNT(*) FROM votes WHERE chat_id = ? AND message_id = ? AND day = ?",
-            (chat_id, message_id, day),
+            "SELECT COUNT(*) FROM votes WHERE chat_id = ? AND message_id = ? AND (? IS NULL OR day = ?)",
+            (chat_id, message_id, day, day),
         ).fetchone()
         return row[0]
 

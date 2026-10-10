@@ -5,6 +5,7 @@ A Telegram bot that lets your group chat vote on the freakiest messages each day
 ## How it works
 
 - **Vote:** reply to a message with `/freaky`. Each person gets one vote per message. You can vote for as many different messages as you like, including your own.
+- **🔥 on voted messages:** in both modes, the bot reacts 🔥 to any message that has at least one vote, so freaky messages stand out in the chat. The 🔥 comes off if every vote on the message is taken back. Bot commands (like someone else's `/freaky`) can't be voted for. Change `FREAKY_MESSAGE_REACTION` in `bot.py` to use a different emoji.
 - **Take a vote back:** reply to the message with `/unfreaky`. This only works for votes cast today; earlier votes are locked in.
 - **Check standings:** `/standings` shows today's votes so far.
 - **All-time stats:** `/alltime` shows the all-time leaderboard, how many days each person was crowned freakiest (👑), the 3 freakiest messages ever, and the "biggest enabler" (whoever has cast the most votes).

@@ -5,7 +5,7 @@ import os
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
-from telegram import LinkPreviewOptions, Message, ReactionTypeEmoji, ReplyParameters, Update
+from telegram import LinkPreviewOptions, Message, MessageEntity, ReactionTypeEmoji, ReplyParameters, Update
 from telegram.constants import ParseMode, ReactionEmoji
 from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, Defaults, MessageHandler, filters
@@ -29,6 +29,9 @@ MIN_AUTHORS = 2
 VOTE_REACTION = ReactionEmoji.FIRE
 ALREADY_VOTED_REACTION = ReactionEmoji.SHRUG
 UNVOTE_REACTION = ReactionEmoji.BROKEN_HEART
+# Put on every message that has at least one vote, in both modes. A bot can only leave
+# one reaction per message, so this marks "has votes" rather than showing a count.
+FREAKY_MESSAGE_REACTION = ReactionEmoji.FIRE
 
 logging.basicConfig(format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -138,6 +141,20 @@ async def acknowledge(msg: Message, reaction: ReactionEmoji, text: str) -> None:
     await msg.reply_text(text)
 
 
+def is_command(msg: Message) -> bool:
+    return any(e.type == MessageEntity.BOT_COMMAND and e.offset == 0 for e in msg.entities or ())
+
+
+async def mark_freaky(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int, marked: bool) -> None:
+    """Add or clear the bot's reaction on a voted message. Never blocks the vote itself."""
+    reaction = [ReactionTypeEmoji(FREAKY_MESSAGE_REACTION)] if marked else []
+    try:
+        await context.bot.set_message_reaction(chat_id, message_id, reaction)
+    except TelegramError as e:
+        # Reaction not allowed in this group, message deleted, etc.
+        log.warning("Couldn't update reaction on message %s in chat %s: %s", message_id, chat_id, e)
+
+
 async def freaky(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.effective_message
     target = replied_target(msg)
@@ -148,6 +165,11 @@ async def freaky(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     author = author_of(target)
     if author is None:
         await msg.reply_text("Bots can't be freaky. Pick a human message.")
+        return
+    # Votes on commands (e.g. someone else's /freaky) would just be noise, and in quiet
+    # mode the bot's reaction on them already means "vote counted".
+    if is_command(target):
+        await msg.reply_text("That's a command, not a freaky message. Reply to the original message instead.")
         return
 
     voter = update.effective_user
@@ -164,6 +186,8 @@ async def freaky(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         day=day,
     )
     count = db.message_votes(msg.chat_id, target.message_id, day)
+    # Also on duplicates, so a reaction someone removed gets restored.
+    await mark_freaky(context, msg.chat_id, target.message_id, True)
     if added:
         await acknowledge(msg, VOTE_REACTION, f"🔥 Vote counted. This message is at {plural(count)} today.")
     else:
@@ -189,6 +213,8 @@ async def unfreaky(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     db.remove_vote(msg.chat_id, target.message_id, voter_id)
     count = db.message_votes(msg.chat_id, target.message_id, day)
+    if db.message_votes(msg.chat_id, target.message_id) == 0:  # no votes left on any day
+        await mark_freaky(context, msg.chat_id, target.message_id, False)
     await acknowledge(msg, UNVOTE_REACTION, f"💔 Vote removed. This message is at {plural(count)} today.")
 
 
