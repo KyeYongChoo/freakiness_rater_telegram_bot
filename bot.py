@@ -69,7 +69,7 @@ def author_of(msg: Message) -> tuple[int, str] | None:
     """(id, display name) of whoever sent the message, or None if it can't be voted on."""
     if msg.sender_chat:  # anonymous admin or channel post
         return msg.sender_chat.id, msg.sender_chat.title or "Anonymous"
-    if msg.from_user and not msg.from_user.is_bot:
+    if msg.from_user:
         return msg.from_user.id, msg.from_user.full_name
     return None
 
@@ -143,9 +143,9 @@ def replied_target(msg: Message) -> Message | None:
     return target
 
 
-async def acknowledge(msg: Message, reaction: ReactionEmoji, text: str) -> None:
-    """React with an emoji in quiet-votes mode, otherwise reply with text."""
-    if db.get_setting(msg.chat_id, "quiet_votes"):
+async def acknowledge(msg: Message, reaction: ReactionEmoji, text: str, loud: bool = False) -> None:
+    """React with an emoji in quiet-votes mode, otherwise reply with text. `loud` forces a reply."""
+    if not loud and db.get_setting(msg.chat_id, "quiet_votes"):
         try:
             await msg.set_reaction(ReactionTypeEmoji(reaction))
             return
@@ -190,20 +190,21 @@ async def freaky(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 "I was shown. Turn this into a supergroup by going to manage group "
                 "> Chat History for new members > Visible. You can change Chat History"
                 "for new members back to 'Hidden' afterwards; it will still be classified "
-                "as a supergroup by Telegram"
+                "as a supergroup by Telegram. Older messages before the group became a supergroup"
+                "remain ineligible to be freaky "
+                "though."
             )
         await msg.reply_text(text)
         return
 
     author = author_of(target)
     if author is None:
-        await msg.reply_text("Bots can't be freaky. Pick a human message.")
+        await msg.reply_text("I can't tell who sent that one. Pick another message.")
         return
-    # Votes on commands (e.g. someone else's /freaky) would just be noise, and in quiet
-    # mode the bot's reaction on them already means "vote counted".
-    if is_command(target):
-        await msg.reply_text("That's a command, not a freaky message. Reply to the original message instead.")
-        return
+    # A command (e.g. someone else's /freaky) may already carry the bot's quiet-vote reaction,
+    # and the bot only gets one reaction per message. So don't mark it, and confirm the vote
+    # with a reply even in quiet mode.
+    on_command = is_command(target)
 
     voter = update.effective_user
     day = msg.date.astimezone(TZ).date().isoformat()
@@ -223,11 +224,14 @@ async def freaky(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
     count = db.message_votes(msg.chat_id, target.message_id, day)
     # Also on duplicates, so a reaction someone removed gets restored.
-    await mark_freaky(context, msg.chat_id, target.message_id, True)
+    if not on_command:
+        await mark_freaky(context, msg.chat_id, target.message_id, True)
     if added:
-        await acknowledge(msg, VOTE_REACTION, f"🔥 Vote counted. This message is at {plural(count)} today.")
+        await acknowledge(msg, VOTE_REACTION, f"🔥 Vote counted. This message is at {plural(count)} today.", loud=on_command)
     else:
-        await acknowledge(msg, ALREADY_VOTED_REACTION, f"You already voted for this one ({plural(count)} today).")
+        await acknowledge(
+            msg, ALREADY_VOTED_REACTION, f"You already voted for this one ({plural(count)} today).", loud=on_command
+        )
 
 
 async def unfreaky(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -237,10 +241,11 @@ async def unfreaky(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await msg.reply_text("Reply to the message you voted for with /unfreaky to take your vote back.")
         return
 
+    on_command = is_command(target)  # see freaky()
     voter_id = update.effective_user.id
     day = db.vote_day(msg.chat_id, target.message_id, voter_id)
     if day is None:
-        await acknowledge(msg, ALREADY_VOTED_REACTION, "You haven't voted for that message.")
+        await acknowledge(msg, ALREADY_VOTED_REACTION, "You haven't voted for that message.", loud=on_command)
         return
     if day_closed(msg.chat_id, day):
         # That day has been recapped and feeds into all-time stats.
@@ -249,9 +254,9 @@ async def unfreaky(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     db.remove_vote(msg.chat_id, target.message_id, voter_id)
     count = db.message_votes(msg.chat_id, target.message_id, day)
-    if db.message_votes(msg.chat_id, target.message_id) == 0:  # no votes left on any day
+    if not on_command and db.message_votes(msg.chat_id, target.message_id) == 0:  # no votes left on any day
         await mark_freaky(context, msg.chat_id, target.message_id, False)
-    await acknowledge(msg, UNVOTE_REACTION, f"💔 Vote removed. This message is at {plural(count)} today.")
+    await acknowledge(msg, UNVOTE_REACTION, f"💔 Vote removed. This message is at {plural(count)} today.", loud=on_command)
 
 
 def setting_command(name: str, value: bool, confirmation: str):
@@ -306,7 +311,7 @@ async def alltime(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     crowns = count_crowns(chat_id)
     voters = db.alltime_voters(chat_id)
 
-    lines = ["🥵 <b>All-Time Freakiness</b>", "🪞Mirror mirror on the wall, who's the FREAKIEST of them all?🥵",""]
+    lines = ["🥵 <b>All-Time Freakiness</b>", "🪞Mirror mirror on the wall, who's the <b>FREAKIEST</b> of them all?🪞",""]
 
     if crowns:
         most = max(crowns.values())
