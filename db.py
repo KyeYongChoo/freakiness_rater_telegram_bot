@@ -21,6 +21,8 @@ class AuthorTally:
 class Database:
     def __init__(self, path: str):
         self.conn = sqlite3.connect(path)
+        # Overwrite deleted rows on disk, so /wipechat doesn't leave old message text in free pages.
+        self.conn.execute("PRAGMA secure_delete = ON")
         self.conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS votes (
@@ -170,6 +172,14 @@ class Database:
         # make the recap job keep trying the dead chat id.
         self.conn.execute("DELETE FROM votes WHERE chat_id = ?", (old_chat_id,))
         self.conn.commit()
+
+    def delete_chat(self, chat_id) -> int:
+        """Delete everything stored about a chat. Returns how many votes were removed."""
+        cur = self.conn.execute("DELETE FROM votes WHERE chat_id = ?", (chat_id,))
+        self.conn.execute("DELETE FROM recaps WHERE chat_id = ?", (chat_id,))
+        self.conn.execute("DELETE FROM chat_settings WHERE chat_id = ?", (chat_id,))
+        self.conn.commit()
+        return cur.rowcount
 
     def is_recapped(self, chat_id, day) -> bool:
         row = self.conn.execute("SELECT 1 FROM recaps WHERE chat_id = ? AND day = ?", (chat_id, day)).fetchone()

@@ -18,7 +18,20 @@ A Telegram bot that lets your group chat vote on the freakiest messages each day
 - **Settings** (anyone in the group can change them; `/help` shows the current state):
   - `/mutereports` / `/unmutereports`: turn the midnight report off or on. Days that pass while muted are skipped for good and aren't posted later. They still count toward `/alltime` stats and crowns.
   - `/quietvotes` / `/loudvotes`: in quiet mode the bot only reacts to `/freaky` with 🔥 (🤷 if you already voted, 💔 for `/unfreaky`) instead of replying. If the group's reaction settings block that emoji, it falls back to a reply. Bots can only use Telegram's standard reactions, so 🌶️ and 🥵 aren't possible; change `VOTE_REACTION` in `bot.py` to use ❤️‍🔥, 😈 or 💋 instead.
+- **Wipe a group's data:** a group admin can send `/wipechat`, then `/wipechat confirm`, to delete everything the bot has saved about that group (see [Privacy](#privacy)).
 - **Jump to message:** in recaps and `/alltime`, tap a quoted message (marked ↗) to jump to it in the chat. This only works in **supergroups**, because basic groups don't have message links. Telegram upgrades a group to a supergroup automatically when you change certain settings (e.g. turning on *Chat history for new members*). Stats carry over when that happens, but links to messages from before the upgrade may not work.
+
+## Privacy
+
+You can [add the hosted bot to your group](https://t.me/freakiness_rater_bot?startgroup=true). Here's what it keeps:
+
+- **Only messages that get a vote.** The bot doesn't save anything else from the chat.
+- For each vote: the first 200 characters of the message's text or caption, the sender's name and Telegram ID, the voter's name and Telegram ID, and the day. Photos, stickers, voice notes and other media are saved only as a label like `[photo]`, never the file.
+- The group's ID and its `/mutereports` and `/quietvotes` settings.
+
+A vote taken back with `/unfreaky` before that night's recap is deleted. After the recap it's kept for `/alltime`, until a group admin sends `/wipechat confirm`. That deletes every vote, saved message, stat and setting for the group, and the database overwrites the deleted data on disk. Recaps the bot already posted and its 😈 reactions stay in the chat; delete those by hand if you want them gone.
+
+Everything is stored in one SQLite file on my Google Cloud server. It isn't shared with anyone.
 
 ## 1. Create the bot
 
@@ -33,6 +46,7 @@ A Telegram bot that lets your group chat vote on the freakiest messages each day
    unmutereports - Resume the daily report
    quietvotes - Confirm votes with a reaction instead of a reply
    loudvotes - Confirm votes with a reply
+   wipechat - Admins: delete everything saved about this group
    help - How this works and current settings
    ```
 3. Add the bot to your group. If `/freaky` gets ignored, or the bot says to reply to a message when you did, either make the bot an admin or run `/setprivacy` → **Disable** in BotFather, then remove the bot and add it back. The second problem only happens in basic groups (not supergroups): Telegram leaves out a reply when it points at a message the bot was never shown, and with privacy mode on, the bot isn't shown ordinary messages. In the end I opted to request the owner to change to supergroup instead since it doesnt have the same privacy problems

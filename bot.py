@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 from telegram import LinkPreviewOptions, Message, MessageEntity, ReactionTypeEmoji, ReplyParameters, Update
-from telegram.constants import ChatType, ParseMode, ReactionEmoji
+from telegram.constants import ChatMemberStatus, ChatType, ParseMode, ReactionEmoji
 from telegram.error import BadRequest, ChatMigrated, NetworkError, RetryAfter, TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, Defaults, MessageHandler, filters
 
@@ -340,6 +340,38 @@ async def alltime(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
 
+async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    msg = update.effective_message
+    if msg.sender_chat and msg.sender_chat.id == msg.chat_id:  # anonymous admin
+        return True
+    try:
+        member = await context.bot.get_chat_member(msg.chat_id, update.effective_user.id)
+    except TelegramError as e:
+        log.warning("Couldn't check admin status in chat %s: %s", msg.chat_id, e)
+        return False
+    return member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER)
+
+
+async def wipechat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.effective_message
+    if not await is_admin(update, context):
+        await msg.reply_text("Only group admins can wipe this chat's data.")
+        return
+    if context.args != ["confirm"]:
+        await msg.reply_text(
+            "⚠️ This deletes everything I've saved about this group: every vote, the saved text of "
+            "voted messages, all-time stats and settings. It can't be undone.\n\n"
+            "Send /wipechat confirm to go ahead."
+        )
+        return
+    removed = db.delete_chat(msg.chat_id)
+    log.info("Wiped chat %s (%s votes)", msg.chat_id, removed)
+    await msg.reply_text(
+        f"🧹 Done. Deleted {plural(removed)} and everything else I'd saved about this group. "
+        "Past recaps and 😈 reactions already in the chat aren't touched; delete those by hand if you want."
+    )
+
+
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     reports = "🔕 muted" if db.get_setting(chat_id, "reports_muted") else "🔔 on"
@@ -352,9 +384,12 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/standings — see today's freakiness so far\n"
         "/alltime — all-time leaderboard, crowns and freakiest messages ever\n\n"
         "/mutereports · /unmutereports — turn the midnight report off or on\n"
-        "/quietvotes · /loudvotes — confirm votes with just a reaction, or with a reply\n\n"
+        "/quietvotes · /loudvotes — confirm votes with just a reaction, or with a reply\n"
+        "/wipechat — admins only: delete everything I've saved about this group\n\n"
         f"At midnight I'll post who was freakiest and the freakiest message, as long as "
         f"at least {MIN_MESSAGES} messages from {MIN_AUTHORS} different people got votes.\n\n"
+        "<b>What I save:</b> only messages that get a vote: the first 200 characters of the text "
+        "(media is saved as a label like [photo]), who sent it and who voted.\n\n"
         f"<b>Settings here:</b> daily report {reports} · vote confirmations {votes}",
         parse_mode=ParseMode.HTML,
     )
@@ -443,8 +478,9 @@ def main() -> None:
     app.add_handler(CommandHandler("loudvotes", setting_command(
         "quiet_votes", False, "📢 Loud votes on: I'll reply to every /freaky again."), filters=groups))
     app.add_handler(CommandHandler("alltime", alltime, filters=groups))
+    app.add_handler(CommandHandler("wipechat", wipechat, filters=groups))
     app.add_handler(CommandHandler(["help", "start"], help_cmd, filters=groups))
-    app.add_handler(CommandHandler(["freaky", "unfreaky", "standings", "alltime", "mutereports", "unmutereports", "quietvotes", "loudvotes", "help", "start"], private_chat, filters=filters.ChatType.PRIVATE & new_message))
+    app.add_handler(CommandHandler(["freaky", "unfreaky", "standings", "alltime", "mutereports", "unmutereports", "quietvotes", "loudvotes", "wipechat", "help", "start"], private_chat, filters=filters.ChatType.PRIVATE & new_message))
     app.add_handler(MessageHandler(filters.StatusUpdate.MIGRATE & filters.ChatType.GROUP, chat_migrated))
 
     # A few seconds past midnight so "today" has definitely rolled over.
